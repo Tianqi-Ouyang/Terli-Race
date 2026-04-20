@@ -319,7 +319,7 @@ ggcuminc(cif_hrs, outcome = "1") +
 
 ## Fine & Gray Model — Race × Liver Transplant Listed Interaction
 
-Fine & Gray competing-risk regression with **death as the main outcome** (liver transplantation as the competing event). Tests whether the effect of race-ethnicity on 90-day mortality is modified by listing for liver transplant.
+Fine & Gray competing-risk regression with **death as the main outcome** (liver transplantation as the competing event). Unadjusted model testing `race_cat_4 × liver_transplant_listed` interaction only — no other covariates.
 
 ```{r}
 library(cmprsk)
@@ -333,19 +333,7 @@ master_int <- master %>%
     status_num = as.numeric(as.character(status_90days))
   )
 
-# Build design matrix with interaction: race_cat_4 * lt_listed
-x_int <- model.matrix(
-  ~ race_cat_4 * lt_listed + age_10 + meld_3_5 +
-    etiology_cirrhosis + hcc_admission + diabetes + cad + ckd + htn + site,
-  data = master_int
-)[, -1]
-
-# Reduced model (no interaction)
-x_red <- model.matrix(
-  ~ race_cat_4 + lt_listed + age_10 + meld_3_5 +
-    etiology_cirrhosis + hcc_admission + diabetes + cad + ckd + htn + site,
-  data = master_int
-)[, -1]
+x_int <- model.matrix(~ race_cat_4 * lt_listed, data = master_int)[, -1]
 
 fg_int <- cmprsk::crr(
   ftime = master_int$time_90days,
@@ -353,16 +341,9 @@ fg_int <- cmprsk::crr(
   cov1 = x_int,
   failcode = 1, cencode = 0
 )
-
-fg_red <- cmprsk::crr(
-  ftime = master_int$time_90days,
-  fstatus = master_int$status_num,
-  cov1 = x_red,
-  failcode = 1, cencode = 0
-)
 ```
 
-### Sub-hazard ratios from the interaction model
+### Sub-hazard ratios
 
 ```{r}
 s <- summary(fg_int)
@@ -378,14 +359,12 @@ coef_tbl %>%
     `95% CI` = sprintf("%.2f, %.2f", `2.5%`, `97.5%`),
     p = style_pvalue(p, digits = 3)
   ) %>%
-  filter(grepl("race_cat_4|lt_listed|age_10|meld_3_5|etiology|hcc|diabetes|cad|ckd|htn", Variable)) %>%
-  kable(caption = "Fine & Gray model with race × LT-listed interaction (death as main outcome, liver transplant as competing event)")
+  kable(caption = "Fine & Gray: race × LT-listed interaction (unadjusted, death as main outcome, liver transplant as competing event)")
 ```
 
-### Interaction test (likelihood / Wald comparison)
+### Wald test for the interaction block
 
 ```{r}
-# Wald test on the block of interaction coefficients
 int_terms <- grep(":", colnames(x_int), value = TRUE)
 idx <- which(colnames(x_int) %in% int_terms)
 
@@ -403,17 +382,12 @@ tibble(
 ) %>% kable()
 ```
 
-### Stratified sub-hazard ratios for race (by LT-listed status)
+### Race sub-hazard ratios stratified by LT-listed status
 
 ```{r}
 fg_by_lt <- lapply(levels(master_int$lt_listed), function(lvl) {
   dat <- master_int %>% filter(lt_listed == lvl)
-  x <- model.matrix(
-    ~ race_cat_4 + age_10 + meld_3_5 +
-      etiology_cirrhosis + hcc_admission + diabetes + cad + ckd + htn + site,
-    data = dat
-  )[, -1]
-  # Drop any all-zero columns
+  x <- model.matrix(~ race_cat_4, data = dat)[, -1, drop = FALSE]
   x <- x[, apply(x, 2, function(col) length(unique(col)) > 1), drop = FALSE]
   fit <- try(cmprsk::crr(
     ftime = dat$time_90days,
@@ -427,7 +401,7 @@ fg_by_lt <- lapply(levels(master_int$lt_listed), function(lvl) {
   out$Variable <- rownames(out)
   out$p <- 2 * (1 - pnorm(abs(s$coef[, "z"])))[match(out$Variable, rownames(s$coef))]
   out$Stratum <- lvl
-  out %>% filter(grepl("race_cat_4", Variable))
+  out
 })
 
 bind_rows(fg_by_lt) %>%
@@ -437,5 +411,5 @@ bind_rows(fg_by_lt) %>%
     `95% CI` = sprintf("%.2f, %.2f", `2.5%`, `97.5%`),
     p = style_pvalue(p, digits = 3)
   ) %>%
-  kable(caption = "Race-ethnicity sub-hazard ratios stratified by listing for liver transplant")
+  kable(caption = "Unadjusted race sub-hazard ratios stratified by listing for liver transplant")
 ```
