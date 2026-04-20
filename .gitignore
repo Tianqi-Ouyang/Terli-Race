@@ -4,6 +4,7 @@
 .DS_Store
 _site/
 /.quarto/
+.quarto/
 *_files/
 *_cache/
 rsconnect/
@@ -12,3 +13,5 @@ rsconnect/
 data/
 *.xlsx
 *.xls
+
+**/*.quarto_ipynb
