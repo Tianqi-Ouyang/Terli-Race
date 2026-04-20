@@ -1,0 +1,441 @@
+---
+title: "Revision"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(knitr)
+library(tableone)
+library(gtsummary)
+library(survival)
+library(tidycmprsk)
+library(ggsurvfit)
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+data_dir <- "data"
+all <- read_excel(file.path(data_dir, "All_edited_new_12142022.xlsx"))
+
+site_files <- c("Baylor0913", "Indiana0913", "Jacksonville0913", "Kentukey0913",
+                "MCW0913", "MGH0913", "Michigan0913", "Oschner0913",
+                "Rochester0913", "USC0913", "Yale0913")
+
+read_site <- function(name) {
+  df <- read_excel(file.path(data_dir, paste0(name, ".xlsx")))
+  if (name == "USC0913") df <- df %>% mutate(rrt_crrt = NA, days_icu = NA, cpr_given = NA)
+  df %>% select(study_id, race, rrt_crrt, days_icu, cpr_given)
+}
+race_added <- bind_rows(lapply(site_files, read_site))
+all <- merge(all, race_added, by = "study_id", all.x = TRUE)
+
+all <- all %>%
+  mutate(
+    type_of_aki = case_when(
+      final_type_of_aki == 1 ~ "Prerenal",
+      final_type_of_aki == 2 ~ "HRS-AKI",
+      final_type_of_aki == 3 ~ "ATN",
+      final_type_of_aki == 4 ~ "Other",
+      final_type_of_aki == 5 ~ "Unable to diagnosis"),
+    etiology_cirrhosis = case_when(
+      etiology_cirrhosis == 1 ~ "Alcohol",
+      etiology_cirrhosis == 2 ~ "Hepatitis C",
+      etiology_cirrhosis == 3 ~ "MASLD",
+      etiology_cirrhosis == 5 ~ "Multifactorial",
+      etiology_cirrhosis %in% c(4, 6, 7) ~ "Other"),
+    race_cat_4 = case_when(
+      ethnicity == 2 & race == 5 ~ "NHW",
+      ethnicity == 1 & race == 5 ~ "HW",
+      ethnicity %in% c(1, 2) & race == 3 ~ "Black",
+      ethnicity %in% c(1, 2) & race %in% c(1, 2, 4, 6) ~ "NWNB"),
+    race = case_when(
+      race == 1 ~ "American Indian or Alaska Native",
+      race == 2 ~ "Asian",
+      race == 3 ~ "Black or African American",
+      race == 4 ~ "Native Hawaiian or Other Pacific Islander",
+      race == 5 ~ "White",
+      race == 6 ~ "Other",
+      race == 7 ~ "Unknown"),
+    ethnicity = ifelse(ethnicity == 1, "Hispanic",
+                ifelse(ethnicity == 2, "Non-Hispanic", "Unknown")),
+    female = ifelse(sex == 2, 1, 0)
+  )
+
+calculate_meld3 <- function(female, bilirubin, sodium, inr, creatinine, albumin) {
+  if (anyNA(c(female, bilirubin, sodium, inr, creatinine, albumin)) ||
+      any(c(bilirubin, sodium, inr, creatinine, albumin) <= 0)) return(NA)
+  1.33 * female + 4.56 * log(bilirubin) +
+    0.82 * (137 - sodium) - 0.24 * (137 - sodium) * log(bilirubin) +
+    9.09 * log(inr) + 11.14 * log(creatinine) +
+    1.85 * (3.5 - albumin) - 1.83 * (3.5 - albumin) * log(creatinine) + 6
+}
+
+all <- all %>%
+  mutate(meld_3 = mapply(calculate_meld3,
+                         female, tb_admit, na_admit, inr_admit,
+                         creatinine_admission, alb_admit))
+
+n_total <- nrow(all)
+
+step1 <- all %>% filter(race != "Unknown")
+n1 <- nrow(step1)
+
+step2 <- step1 %>% filter(ethnicity != "Unknown")
+n2 <- nrow(step2)
+
+step3 <- step2 %>%
+  mutate(MELD_Na_baseline = replace_na(MELD_Na_baseline, median(MELD_Na_baseline, na.rm = TRUE))) %>%
+  filter(MELD_Na_baseline >= 0)
+n3 <- nrow(step3)
+
+step4 <- step3 %>% filter(!is.na(meld_3))
+n4 <- nrow(step4)
+
+adjuster_vars <- c("age_admission", "etiology_cirrhosis", "hcc_admission",
+                    "diabetes", "cad", "ckd", "htn", "site")
+comorb_detail <- sapply(adjuster_vars, function(v) sum(is.na(step4[[v]])))
+
+master <- step4 %>%
+  filter(if_all(all_of(adjuster_vars), ~ !is.na(.)))
+n5 <- nrow(master)
+
+cat_var <- c("sex", "race_cat_4", "etiology_cirrhosis", "hcc_admission",
+             "diabetes", "cad", "ckd", "htn", "site",
+             "ascites_admission", "encephalopathy_admission",
+             "type_of_aki", "aclf_grade", "status_90days")
+for (v in intersect(cat_var, names(master))) master[[v]] <- as.factor(master[[v]])
+
+master$race_cat_4 <- relevel(master$race_cat_4, ref = "NHW")
+master$etiology_cirrhosis <- relevel(master$etiology_cirrhosis, ref = "Alcohol")
+master$status_90days <- factor(master$status_90days)
+
+master <- master %>%
+  mutate(
+    age_10 = age_admission / 10,
+    meld_3_5 = meld_3 / 5,
+    death_status_90days = ifelse(status_90days == 1, 1, 0)
+  )
+
+master_hrs <- master %>% filter(type_of_aki == "HRS-AKI")
+```
+
+## Exclusion Cascade
+
+```{r}
+comorb_nonzero <- comorb_detail[comorb_detail > 0]
+comorb_note <- if (length(comorb_nonzero) > 0) {
+  paste0(" (", paste(names(comorb_nonzero), comorb_nonzero, sep = " ", collapse = ", "), ")")
+} else ""
+
+exclusion_df <- tibble(
+  Step = c(
+    "Original HARMONY cohort",
+    "  Excluded: Race unknown or not reported",
+    "Remaining after race exclusion",
+    "  Excluded: Ethnicity unknown or not reported",
+    "Remaining after ethnicity exclusion",
+    "  Excluded: MELD_Na_baseline < 0",
+    "Remaining after MELD_Na_baseline filter",
+    "  Excluded: Any element(s) of MELD 3.0 missing or non-positive",
+    "Remaining after MELD 3.0 exclusion",
+    paste0("  Excluded: Missing baseline covariates", comorb_note),
+    "**Final cohort for analysis**",
+    "  of which HRS-AKI sub-cohort"
+  ),
+  N = c(
+    n_total,
+    n_total - n1,
+    n1,
+    n1 - n2,
+    n2,
+    n2 - n3,
+    n3,
+    n3 - n4,
+    n4,
+    n4 - n5,
+    n5,
+    nrow(master_hrs)
+  )
+)
+
+check_sum <- (n_total - n1) + (n1 - n2) + (n2 - n3) + (n3 - n4) + (n4 - n5)
+
+kable(exclusion_df, caption = paste0(
+  "Cohort exclusion cascade — total excluded: ", check_sum,
+  ", verification: ", n_total, " − ", check_sum, " = ", n_total - check_sum))
+```
+
+## Table 3: Competing Risk Models — Full Cohort {.tabset}
+
+Age reported per 10-year increment; MELD 3.0 reported per 5-point increment. All models adjusted for study site.
+
+```{r}
+var_labels <- list(
+  race_cat_4 = "Race-ethnicity",
+  age_10 = "Age (per 10 years)",
+  meld_3_5 = "MELD 3.0 (per 5 points)",
+  etiology_cirrhosis = "Etiology of cirrhosis",
+  hcc_admission = "HCC",
+  diabetes = "Diabetes",
+  cad = "CAD",
+  ckd = "CKD",
+  htn = "Hypertension"
+)
+
+binary_vars <- c("hcc_admission", "diabetes", "cad", "ckd", "htn")
+
+uv <- master %>%
+  select(race_cat_4, age_10, meld_3_5, etiology_cirrhosis,
+         hcc_admission, diabetes, cad, ckd, htn,
+         time_90days, status_90days) %>%
+  tbl_uvregression(
+    method = tidycmprsk::crr,
+    y = Surv(time_90days, status_90days),
+    method.args = list(failcode = 1, cencode = 0),
+    exponentiate = TRUE,
+    pvalue_fun = ~ style_pvalue(.x, digits = 3),
+    show_single_row = all_of(binary_vars),
+    label = var_labels
+  ) %>% bold_p() %>% bold_labels()
+
+mv1 <- tidycmprsk::crr(
+  Surv(time_90days, status_90days) ~ race_cat_4 + age_10 + meld_3_5 +
+    etiology_cirrhosis + hcc_admission + site,
+  failcode = 1, cencode = 0,
+  data = master
+) %>% tbl_regression(
+  exponentiate = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 3),
+  show_single_row = "hcc_admission",
+  label = var_labels,
+  include = c(race_cat_4, age_10, meld_3_5, etiology_cirrhosis, hcc_admission)
+) %>% bold_p() %>% bold_labels()
+
+mv2 <- tidycmprsk::crr(
+  Surv(time_90days, status_90days) ~ race_cat_4 + age_10 + meld_3_5 +
+    etiology_cirrhosis + hcc_admission + diabetes + cad + ckd + htn + site,
+  failcode = 1, cencode = 0,
+  data = master
+) %>% tbl_regression(
+  exponentiate = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 3),
+  show_single_row = all_of(binary_vars),
+  label = var_labels,
+  include = c(race_cat_4, age_10, meld_3_5, etiology_cirrhosis, hcc_admission, diabetes, cad, ckd, htn)
+) %>% bold_p() %>% bold_labels()
+
+tbl_merge(
+  list(uv, mv1, mv2),
+  tab_spanner = c("Univariate", "Multivariable Model 1", "Multivariable Model 2")
+)
+```
+
+## Table S4: Competing Risk Models — HRS-AKI Sub-cohort (N = `r nrow(master_hrs)`)
+
+Age reported per 10-year increment; MELD 3.0 reported per 5-point increment. All models adjusted for study site.
+
+```{r}
+uv_hrs <- master_hrs %>%
+  select(race_cat_4, age_10, meld_3_5, etiology_cirrhosis,
+         hcc_admission, diabetes, cad, ckd, htn,
+         time_90days, status_90days) %>%
+  tbl_uvregression(
+    method = tidycmprsk::crr,
+    y = Surv(time_90days, status_90days),
+    method.args = list(failcode = 1, cencode = 0),
+    exponentiate = TRUE,
+    pvalue_fun = ~ style_pvalue(.x, digits = 3),
+    show_single_row = all_of(binary_vars),
+    label = var_labels
+  ) %>% bold_p() %>% bold_labels()
+
+mv1_hrs <- tidycmprsk::crr(
+  Surv(time_90days, status_90days) ~ race_cat_4 + age_10 + meld_3_5 +
+    etiology_cirrhosis + hcc_admission + site,
+  failcode = 1, cencode = 0,
+  data = master_hrs
+) %>% tbl_regression(
+  exponentiate = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 3),
+  show_single_row = "hcc_admission",
+  label = var_labels,
+  include = c(race_cat_4, age_10, meld_3_5, etiology_cirrhosis, hcc_admission)
+) %>% bold_p() %>% bold_labels()
+
+mv2_hrs <- tidycmprsk::crr(
+  Surv(time_90days, status_90days) ~ race_cat_4 + age_10 + meld_3_5 +
+    etiology_cirrhosis + hcc_admission + diabetes + cad + ckd + htn + site,
+  failcode = 1, cencode = 0,
+  data = master_hrs
+) %>% tbl_regression(
+  exponentiate = TRUE,
+  pvalue_fun = ~ style_pvalue(.x, digits = 3),
+  show_single_row = all_of(binary_vars),
+  label = var_labels,
+  include = c(race_cat_4, age_10, meld_3_5, etiology_cirrhosis, hcc_admission, diabetes, cad, ckd, htn)
+) %>% bold_p() %>% bold_labels()
+
+tbl_merge(
+  list(uv_hrs, mv1_hrs, mv2_hrs),
+  tab_spanner = c("Univariate", "Multivariable Model 1", "Multivariable Model 2")
+)
+```
+
+## Figure 2: Cumulative Incidence of Death — Full Cohort
+
+```{r, fig.width=10, fig.height=7}
+cif_all <- cuminc(Surv(time_90days, status_90days) ~ race_cat_4, data = master)
+
+ggcuminc(cif_all, outcome = "1") +
+  scale_x_continuous(breaks = seq(0, 90, 30), limits = c(0, 90)) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, NA)) +
+  labs(
+    x = "Time (days)",
+    y = "Cumulative incidence of death",
+    title = "Cumulative incidence of death through 90 days by race-ethnicity (full cohort)",
+    color = "Race-ethnicity"
+  ) +
+  theme_minimal() +
+  add_risktable()
+```
+
+## Figure 3: Cumulative Incidence of Death — HRS-AKI Sub-cohort
+
+```{r, fig.width=10, fig.height=7}
+cif_hrs <- cuminc(Surv(time_90days, status_90days) ~ race_cat_4, data = master_hrs)
+
+ggcuminc(cif_hrs, outcome = "1") +
+  scale_x_continuous(breaks = seq(0, 90, 30), limits = c(0, 90)) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, NA)) +
+  labs(
+    x = "Time (days)",
+    y = "Cumulative incidence of death",
+    title = "Cumulative incidence of death through 90 days by race-ethnicity (HRS-AKI)",
+    color = "Race-ethnicity"
+  ) +
+  theme_minimal() +
+  add_risktable()
+```
+
+## Fine & Gray Model — Race × Liver Transplant Listed Interaction
+
+Fine & Gray competing-risk regression with **death as the main outcome** (liver transplantation as the competing event). Tests whether the effect of race-ethnicity on 90-day mortality is modified by listing for liver transplant.
+
+```{r}
+library(cmprsk)
+
+master_int <- master %>%
+  filter(!is.na(liver_transplant_listed)) %>%
+  mutate(
+    lt_listed = factor(liver_transplant_listed,
+                       levels = c(0, 1),
+                       labels = c("Not listed", "Listed")),
+    status_num = as.numeric(as.character(status_90days))
+  )
+
+# Build design matrix with interaction: race_cat_4 * lt_listed
+x_int <- model.matrix(
+  ~ race_cat_4 * lt_listed + age_10 + meld_3_5 +
+    etiology_cirrhosis + hcc_admission + diabetes + cad + ckd + htn + site,
+  data = master_int
+)[, -1]
+
+# Reduced model (no interaction)
+x_red <- model.matrix(
+  ~ race_cat_4 + lt_listed + age_10 + meld_3_5 +
+    etiology_cirrhosis + hcc_admission + diabetes + cad + ckd + htn + site,
+  data = master_int
+)[, -1]
+
+fg_int <- cmprsk::crr(
+  ftime = master_int$time_90days,
+  fstatus = master_int$status_num,
+  cov1 = x_int,
+  failcode = 1, cencode = 0
+)
+
+fg_red <- cmprsk::crr(
+  ftime = master_int$time_90days,
+  fstatus = master_int$status_num,
+  cov1 = x_red,
+  failcode = 1, cencode = 0
+)
+```
+
+### Sub-hazard ratios from the interaction model
+
+```{r}
+s <- summary(fg_int)
+coef_tbl <- as.data.frame(s$conf.int)
+coef_tbl$Variable <- rownames(coef_tbl)
+pvals <- 2 * (1 - pnorm(abs(s$coef[, "z"])))
+coef_tbl$p <- pvals[match(coef_tbl$Variable, names(pvals))]
+
+coef_tbl %>%
+  transmute(
+    Variable,
+    sHR = sprintf("%.2f", `exp(coef)`),
+    `95% CI` = sprintf("%.2f, %.2f", `2.5%`, `97.5%`),
+    p = style_pvalue(p, digits = 3)
+  ) %>%
+  filter(grepl("race_cat_4|lt_listed|age_10|meld_3_5|etiology|hcc|diabetes|cad|ckd|htn", Variable)) %>%
+  kable(caption = "Fine & Gray model with race × LT-listed interaction (death as main outcome, liver transplant as competing event)")
+```
+
+### Interaction test (likelihood / Wald comparison)
+
+```{r}
+# Wald test on the block of interaction coefficients
+int_terms <- grep(":", colnames(x_int), value = TRUE)
+idx <- which(colnames(x_int) %in% int_terms)
+
+b <- fg_int$coef[idx]
+V <- fg_int$var[idx, idx, drop = FALSE]
+wald <- as.numeric(t(b) %*% solve(V) %*% b)
+df_wald <- length(b)
+p_wald <- pchisq(wald, df = df_wald, lower.tail = FALSE)
+
+tibble(
+  Test = "Wald test for race_cat_4 × lt_listed interaction",
+  `Chi-sq` = sprintf("%.3f", wald),
+  df = df_wald,
+  `p-value` = style_pvalue(p_wald, digits = 3)
+) %>% kable()
+```
+
+### Stratified sub-hazard ratios for race (by LT-listed status)
+
+```{r}
+fg_by_lt <- lapply(levels(master_int$lt_listed), function(lvl) {
+  dat <- master_int %>% filter(lt_listed == lvl)
+  x <- model.matrix(
+    ~ race_cat_4 + age_10 + meld_3_5 +
+      etiology_cirrhosis + hcc_admission + diabetes + cad + ckd + htn + site,
+    data = dat
+  )[, -1]
+  # Drop any all-zero columns
+  x <- x[, apply(x, 2, function(col) length(unique(col)) > 1), drop = FALSE]
+  fit <- try(cmprsk::crr(
+    ftime = dat$time_90days,
+    fstatus = as.numeric(as.character(dat$status_90days)),
+    cov1 = x,
+    failcode = 1, cencode = 0
+  ), silent = TRUE)
+  if (inherits(fit, "try-error")) return(NULL)
+  s <- summary(fit)
+  out <- as.data.frame(s$conf.int)
+  out$Variable <- rownames(out)
+  out$p <- 2 * (1 - pnorm(abs(s$coef[, "z"])))[match(out$Variable, rownames(s$coef))]
+  out$Stratum <- lvl
+  out %>% filter(grepl("race_cat_4", Variable))
+})
+
+bind_rows(fg_by_lt) %>%
+  transmute(
+    Stratum, Variable,
+    sHR = sprintf("%.2f", `exp(coef)`),
+    `95% CI` = sprintf("%.2f, %.2f", `2.5%`, `97.5%`),
+    p = style_pvalue(p, digits = 3)
+  ) %>%
+  kable(caption = "Race-ethnicity sub-hazard ratios stratified by listing for liver transplant")
+```

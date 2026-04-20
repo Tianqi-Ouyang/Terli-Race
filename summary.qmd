@@ -1,0 +1,178 @@
+---
+title: "Summary"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(readxl)
+library(knitr)
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+data_dir <- "data"
+all <- read_excel(file.path(data_dir, "All_edited_new_12142022.xlsx"))
+
+site_files <- c("Baylor0913", "Indiana0913", "Jacksonville0913", "Kentukey0913",
+                "MCW0913", "MGH0913", "Michigan0913", "Oschner0913",
+                "Rochester0913", "USC0913", "Yale0913")
+
+read_site <- function(name) {
+  df <- read_excel(file.path(data_dir, paste0(name, ".xlsx")))
+  if (name == "USC0913") df <- df %>% mutate(rrt_crrt = NA, days_icu = NA, cpr_given = NA)
+  df %>% select(study_id, race, rrt_crrt, days_icu, cpr_given)
+}
+race_added <- bind_rows(lapply(site_files, read_site))
+all <- merge(all, race_added, by = "study_id", all.x = TRUE)
+
+all <- all %>%
+  mutate(
+    type_of_aki = case_when(
+      final_type_of_aki == 1 ~ "Prerenal",
+      final_type_of_aki == 2 ~ "HRS-AKI",
+      final_type_of_aki == 3 ~ "ATN",
+      final_type_of_aki == 4 ~ "Other",
+      final_type_of_aki == 5 ~ "Unable to diagnosis"),
+    etiology_cirrhosis_lbl = case_when(
+      etiology_cirrhosis == 1 ~ "Alcohol",
+      etiology_cirrhosis == 2 ~ "HCV",
+      etiology_cirrhosis == 3 ~ "NASH",
+      etiology_cirrhosis == 5 ~ "Multifactorial",
+      etiology_cirrhosis %in% c(4, 6, 7) ~ "Other"),
+    race_cat_4 = case_when(
+      ethnicity == 2 & race == 5 ~ "NHW",
+      ethnicity == 1 & race == 5 ~ "HW",
+      ethnicity %in% c(1, 2) & race == 3 ~ "B",
+      ethnicity %in% c(1, 2) & race %in% c(1, 2, 4, 6) ~ "NWNB"),
+    race_cat_5 = case_when(
+      ethnicity == 2 & race == 5 ~ "NHW",
+      ethnicity == 1 & race == 5 ~ "HW",
+      ethnicity == 2 & race == 3 ~ "NHB",
+      ethnicity == 1 & race == 3 ~ "HB",
+      ethnicity %in% c(1, 2) & race %in% c(1, 2, 4, 6, 7) ~ "NWNB"),
+    race_lbl = case_when(
+      race == 1 ~ "American Indian or Alaska Native",
+      race == 2 ~ "Asian",
+      race == 3 ~ "Black or African American",
+      race == 4 ~ "Native Hawaiian or Other Pacific Islander",
+      race == 5 ~ "White",
+      race == 6 ~ "Other",
+      race == 7 ~ "Unknown"),
+    race_cat_new = case_when(
+      race_lbl == "Black or African American" ~ "Black or African American",
+      race_lbl == "White" ~ "White",
+      TRUE ~ "Other"),
+    cirrhosis = case_when(
+      etiology_cirrhosis == 1 ~ 1,
+      is.na(etiology_cirrhosis) ~ NA_real_,
+      TRUE ~ 0),
+    transplant_evaluation_outcome = case_when(
+      is.na(Transplant_evalutation) ~ NA_real_,
+      Transplant_evalutation == 1 ~ 1,
+      TRUE ~ 0),
+    ethnicity_lbl = ifelse(ethnicity == 1, "Hispanic",
+                    ifelse(ethnicity == 2, "Non-Hispanic", "Unknown")),
+    female = ifelse(sex == 2, 1, 0)
+  )
+
+calculate_meld3 <- function(female, bilirubin, sodium, inr, creatinine, albumin) {
+  if (anyNA(c(female, bilirubin, sodium, inr, creatinine, albumin)) ||
+      any(c(bilirubin, sodium, inr, creatinine, albumin) <= 0)) return(NA)
+  1.33 * female + 4.56 * log(bilirubin) +
+    0.82 * (137 - sodium) - 0.24 * (137 - sodium) * log(bilirubin) +
+    9.09 * log(inr) + 11.14 * log(creatinine) +
+    1.85 * (3.5 - albumin) - 1.83 * (3.5 - albumin) * log(creatinine) + 6
+}
+
+all <- all %>%
+  mutate(meld_3 = mapply(calculate_meld3,
+                         female, tb_admit, na_admit, inr_admit,
+                         creatinine_admission, alb_admit))
+```
+
+## New Variables Created
+
+| Variable | Source | Description |
+|---|---|---|
+| `type_of_aki` | `final_type_of_aki` | Prerenal / HRS-AKI / ATN / Other / Unable to diagnose |
+| `etiology_cirrhosis` (relabel) | numeric code | Alcohol / HCV / NASH / Multifactorial / Other |
+| `race` (relabel) | numeric code 1–7 | Full race label |
+| `race_cat_new` | `race` | White / Black or African American / Other |
+| `race_cat_4` | `race` + `ethnicity` | NHW / HW / B / NWNB (primary stratifier, ref = NHW) |
+| `race_cat_5` | `race` + `ethnicity` | NHW / HW / NHB / HB / NWNB |
+| `ethnicity` (relabel) | numeric code | Hispanic / Non-Hispanic / Unknown |
+| `cirrhosis` | `etiology_cirrhosis` | 1 if Alcohol, 0 otherwise, NA preserved |
+| `transplant_evaluation_outcome` | `Transplant_evalutation` | 0/1 with NA preserved |
+| `female` | `sex` | 1 if `sex == 2` |
+| `meld_3` | `tb_admit`, `na_admit`, `inr_admit`, `creatinine_admission`, `alb_admit`, `female` | MELD 3.0 score |
+| `death_status_90days` | `status_90days` | 1 if death, 0 otherwise (built later in cohort) |
+| `rrt_crrt`, `days_icu`, `cpr_given` | per-site files | Joined in from site spreadsheets |
+
+## Missing Data Check
+
+Variables required for the multivariable model adjusters:
+
+```{r}
+required_vars <- c("age_admission", "meld_3", "etiology_cirrhosis",
+                   "hcc_admission", "diabetes", "cad", "ckd", "htn", "site",
+                   "race_cat_4", "ethnicity_lbl", "MELD_Na_baseline",
+                   "time_90days", "status_90days", "tb_admit", "na_admit",
+                   "inr_admit", "creatinine_admission", "alb_admit",
+                   "rrt_crrt", "days_icu", "cpr_given")
+
+miss <- tibble(
+  variable = required_vars,
+  n_missing = sapply(required_vars, function(v) sum(is.na(all[[v]]))),
+  pct_missing = round(100 * sapply(required_vars, function(v) mean(is.na(all[[v]]))), 1)
+) %>% arrange(desc(n_missing))
+
+kable(miss)
+```
+
+## Cohort Construction
+
+```{r}
+n_total <- nrow(all)
+n_after_unknown <- all %>%
+  filter(race_lbl != "Unknown", ethnicity_lbl != "Unknown") %>% nrow()
+
+master <- all %>%
+  filter(race_lbl != "Unknown", ethnicity_lbl != "Unknown") %>%
+  mutate(MELD_Na_baseline = replace_na(MELD_Na_baseline,
+                                       median(MELD_Na_baseline, na.rm = TRUE))) %>%
+  filter(MELD_Na_baseline >= 0) %>%
+  filter(if_all(all_of(c("age_admission", "meld_3", "etiology_cirrhosis",
+                         "hcc_admission", "diabetes", "cad", "ckd", "htn",
+                         "site")), ~ !is.na(.)))
+
+n_master <- nrow(master)
+n_hrs <- master %>% filter(type_of_aki == "HRS-AKI") %>% nrow()
+
+tibble(
+  Step = c("Raw merged dataset", "Drop Unknown race/ethnicity",
+           "Final master (model adjusters complete)", "HRS-AKI sub-cohort"),
+  N = c(n_total, n_after_unknown, n_master, n_hrs)
+) %>% kable()
+```
+
+## Race Distribution in Final Cohort
+
+```{r}
+master %>% count(race_cat_4) %>%
+  mutate(pct = round(100 * n / sum(n), 1)) %>% kable()
+```
+
+## Output Tables Summary
+
+| Output | Stratifier | Cohort | Notes |
+|---|---|---|---|
+| Table 1 (race_cat_new, part 1) | `race_cat_new` | full master | vars 1–60 |
+| Table 1 (race_cat_new, part 2) | `race_cat_new` | full master | vars 60–97 |
+| Table 1 (race_cat_4, part 1) | `race_cat_4` | full master | vars 1–60 |
+| Table 1 (race_cat_4, part 2) | `race_cat_4` | full master | vars 60–97 |
+| Competing-risk univariate (model 1) | `race_cat_4` | master | adj: age, meld_3, etiology, hcc, diabetes, cad, ckd, htn, site |
+| Competing-risk multivariate (model 1) | `race_cat_4` | master | same adjusters |
+| Competing-risk univariate (model 2) | `race_cat_4` | master | adj: age, meld_3, etiology, hcc, site |
+| Competing-risk multivariate (model 2) | `race_cat_4` | master | same |
+| KM curve, 90-day death | `race_cat_4` | master | log-rank p shown |
+| Competing-risk models 1 & 2 (HRS) | `race_cat_4` | master_hrs | mirror full-cohort models |
+| KM curve, 90-day death (HRS) | `race_cat_4` | master_hrs | |

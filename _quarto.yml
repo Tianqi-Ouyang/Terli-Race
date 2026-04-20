@@ -1,0 +1,19 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "HARMONY Race Sub-analysis"
+  navbar:
+    left:
+      - href: summary.qmd
+        text: Summary
+      - href: revision.qmd
+        text: Revision
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    code-fold: true
+    embed-resources: true

@@ -1,0 +1,292 @@
+---
+title: "Subanalysis race"
+output: html_document
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tableone)
+library(gtsummary)
+library(survival)
+library(ggplot2)
+library(readxl)
+library(ggpubr)
+library(splines)
+library(xlsx)
+library(MatchIt)
+
+
+setwd('/Users/to909/Desktop/Andrew')
+all<- read_excel("All_edited_new_12142022.xlsx")
+
+
+Baylor0913<- read_excel("Baylor0913.xlsx") %>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Indiana0913 <- read_excel("Indiana0913.xlsx") %>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Jacksonville0913<- read_excel("Jacksonville0913.xlsx") %>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Kentukey0913<- read_excel("Kentukey0913.xlsx")  %>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+MCW0913<- read_excel("MCW0913.xlsx")%>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+MGH0913<- read_excel("MGH0913.xlsx")%>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Michigan0913<- read_excel("Michigan0913.xlsx")%>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Oschner0913<- read_excel("Oschner0913.xlsx")%>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Rochester0913<- read_excel("Rochester0913.xlsx")%>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+USC0913<- read_excel("USC0913.xlsx")%>%mutate(rrt_crrt=NA,days_icu=NA,cpr_given=NA) %>%  select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Yale0913<- read_excel("Yale0913.xlsx")%>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+race_added <- rbind(Baylor0913,Indiana0913,Jacksonville0913,Kentukey0913,MCW0913,MGH0913,Michigan0913,Oschner0913,Rochester0913,USC0913,Yale0913) 
+
+
+all <- merge(all,race_added, by="study_id",all.x=TRUE)
+
+
+all <- all %>% mutate(ethnicity=ifelse(ethnicity==1,"Hispanic",ifelse(ethnicity==2,"Non-Hispanic","Unknown")))
+All <- all %>% mutate(type_of_aki=case_when(
+  final_type_of_aki == 1 ~ "Prerenal",
+  final_type_of_aki == 2 ~ "HRS-AKI",
+  final_type_of_aki == 3 ~"ATN",
+  final_type_of_aki == 4 ~"Other",
+  final_type_of_aki == 5 ~"Unable to diagnosis")) %>%
+  mutate(etiology_cirrhosis=case_when(
+    etiology_cirrhosis == 1 ~ "Alcohol",
+    etiology_cirrhosis == 2 ~ "HCV",
+    etiology_cirrhosis == 3 ~ "NASH",
+    etiology_cirrhosis == 5 ~ "Multifactorial",
+    etiology_cirrhosis == 6 | etiology_cirrhosis == 7 | etiology_cirrhosis == 4 ~ "Other")) %>%
+  mutate(
+   
+      race_cat_5 = case_when(
+        ethnicity == 2 & race == 5 ~ "NHW",  # Non-Hispanic White
+        ethnicity == 1 & race == 5 ~ "HW",   # Hispanic White
+        ethnicity == 2 & race == 3 ~ "NHB",  # Non-Hispanic Black
+        ethnicity == 1 & race == 3 ~ "HB",   # Hispanic Black
+        ethnicity %in% c(1, 2) & race %in% c(1, 2, 4, 6, 7) ~ "NWNB"
+    )
+  
+  ) %>% 
+  mutate(race=case_when(
+    race == 1 ~ "American Indian or Alaska Native",
+    race == 2 ~ "Asian",
+    race == 3 ~ "Black or African American",
+    race == 4 ~ "Native Hawaiian or Other Pacific Islander",
+    race == 5 ~ "White", 
+    race == 6 ~ "Other", 
+    race == 7 ~ "Unknown")) %>% 
+  mutate(race_cat_new=case_when(
+    race == "Black or African American" ~ "Black or African American",
+    race == "White" ~ "White", 
+    TRUE ~ "Other"
+  ),
+  cirrhosis=case_when(etiology_cirrhosis == 1 ~ 1,
+                      is.na(etiology_cirrhosis) ~ NA_real_,
+                      TRUE ~ 0),
+  transplant_evaluation_outcome=case_when( is.na(Transplant_evalutation) ~ NA_real_ ,
+                                           Transplant_evalutation==1 ~ 1,
+                                           TRUE ~ 0
+    
+  ))
+
+master <- All %>% filter(!race=='Unknown',!ethnicity=="Unknown")  %>% mutate(MELD_Na_baseline =replace_na(MELD_Na_baseline,median(MELD_Na_baseline,na.rm = TRUE))) %>% filter(MELD_Na_baseline>=0)
+
+
+
+all_var <- c(
+  "age_admission", "sex", "White", "race_cat_new", "reason_for_admission",
+  "loop_diuretic", "aldosterone_antagonist", "lactulose", "rifaximin",
+  "prophylactic_antibiotic", "nsaids", "beta_blockers", "albumin_given_admission",
+  "albumin_amount_admission", "albumin_given_prior", "diabetes", "cad", "ckd", "htn",
+  "etiology_cirrhosis", "ascites_admission", "encephalopathy_admission",
+  "gi_bleed_admission", "peritonitis_admission", "hcc_admission", "tips_admission",
+  "lvp_admission", "alcoholic_hepatitis_admission", "na_admit", "k_admit",
+  "cl_admit", "co2_admit", "bun_admit", "creatinine_admission", "urine_creatinine",
+  "ca_admit", "mg_admit", "phos_admit", "peak_creatinine", "alt_admit",
+  "alkphos_admit", "tb_admit", "alb_admit", "nh3_admit", "inr_admit",
+  "wbc_admit", "hct_admit", "plt_admit", "urine_sodium", "fena",
+  "he_grade_admission", "sbp_admission", "dbp_admission", "rrt", "rrt_hemodialysis",
+  "initial_rrt", "icu_admission", "hrs_vasoconstrictor", "pressor", "intubated",
+  "respiratory_failure", "liver_transplant_listed", "liver_transplant",
+  "kidney_transplant", "palliative_care", "discharge_disposition", "code_status",
+  "Akin", "final_type_of_aki", "MELD_baseline", "MELD_Na_baseline", "site",
+  "AKI_responders", "clif_score", "MAP", "CLIF_C_Score", "aclf_grade",
+  "status_90days", "time_90days", "Encephalopathy", "Alcoholic_hepatitis",
+  "HCC", "New_diagnosis_of_cirrhosis", "Transplant_evalutation", "SBP",
+  "aki_stage_4", "death_discharge", "baseline_creatinine", "admission_route",
+  "los",
+  # Added 0317
+  "admission_route", "peak_creatinine", "rrt_hemodialysis", "rrt_crrt",
+  "initial_rrt", "days_icu", "intubated", "death_discharge", "respiratory_failure",
+  "readmissions", "liver_transplant", "kidney_transplant", "discharge_disposition",
+  "cpr_given"
+)
+
+
+
+# all the categorical variables 
+cat_var <- c(
+  "sex", "White", "race_cat_new", "reason_for_admission", "loop_diuretic", "aldosterone_antagonist", "lactulose", "rifaximin",
+  "prophylactic_antibiotic", "nsaids", "beta_blockers", "albumin_given_admission", "albumin_given_prior", "diabetes", "cad", 
+  "ckd", "htn", "etiology_cirrhosis", "ascites_admission", "encephalopathy_admission", "gi_bleed_admission", "peritonitis_admission", 
+  "hcc_admission", "tips_admission", "lvp_admission", "alcoholic_hepatitis_admission", "he_grade_admission", "rrt", 
+  "rrt_hemodialysis", "initial_rrt", "icu_admission", "hrs_vasoconstrictor", "pressor", "intubated", "respiratory_failure", 
+  "liver_transplant_listed", "liver_transplant", "kidney_transplant", "palliative_care", "discharge_disposition", "code_status", 
+  "Akin", "final_type_of_aki", "site", "AKI_responders", "aclf_grade", "Encephalopathy", "Alcoholic_hepatitis", "HCC", 
+  "New_diagnosis_of_cirrhosis", "Transplant_evalutation", "SBP", "aki_stage_4", "death_discharge", "admission_route", 
+  "rrt_crrt", "readmissions", "cpr_given"
+)
+
+
+#create numerical variables
+num_var <- setdiff(all_var,cat_var)
+
+
+master[, cat_var] <- lapply(master[, cat_var], as.factor)
+# relevel factor #
+
+master$race_cat_new <- as.factor(master$race_cat_new )
+master$race_cat_new <- relevel(master$race_cat_new, ref= "White")
+
+
+
+
+```
+
+```{r,include=FALSE}
+
+T1_race_all <- CreateTableOne(vars = all_var[1:60],strata = "race_cat_new",includeNA = F,addOverall = TRUE,data = master, factorVars = cat_var)
+#print table one 
+T1_race_all_csv <- print(T1_race_all,exact = c("HCC","New_diagnosis_of_cirrhosis","kidney_transplant"), nonnormal=num_var,showAllLevels = T,missing = T,quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+#save 
+write.csv(T1_race_all_csv, file = '/Users/to909/Partners HealthCare Dropbox/Tianqi Ouyang/Projects/Subanalysis_race/Table1_race_all_1_60.csv')
+
+
+
+T1_race_all <- CreateTableOne(vars = all_var[60:104],strata = "race_cat_new",includeNA = F,addOverall = TRUE,data = master, factorVars = cat_var)
+#print table one 
+T1_race_all_csv <- print(T1_race_all,exact = c("HCC","New_diagnosis_of_cirrhosis","kidney_transplant"), nonnormal=num_var,showAllLevels = T,missing = T,quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+#save 
+write.csv(T1_race_all_csv, file = '/Users/to909/Partners HealthCare Dropbox/Tianqi Ouyang/Projects/Subanalysis_race/Table1_race_all_60_104.csv')
+
+
+```
+
+
+
+
+# Fine and Gray  event: death competing risk: liver transplant  multivariate 
+```{r,echo=FALSE,warning=FALSE, message=FALSE,include=T}
+
+master$status_90days <- as.factor(master$status_90days)
+tidycmprsk::crr(Surv(time_90days,status_90days) ~race_cat_new+age_admission+sex+MELD_Na_baseline+alb_admit+baseline_creatinine+encephalopathy_admission+alcoholic_hepatitis_admission,failcode=1,cencode=0, data = master) %>% tbl_regression(exp = TRUE)%>%
+  bold_p(0.01) %>%        # bold p-values under a given threshold (default 0.05)
+  bold_labels() %>% add_n()
+```
+
+
+# Fine and Gray  event: death competing risk: liver transplant  multivariate 
+```{r,echo=FALSE,warning=FALSE, message=FALSE,include=T}
+
+master$status_90days <- as.factor(master$status_90days)
+tidycmprsk::crr(Surv(time_90days,status_90days) ~hispanic_race+age_admission+sex+MELD_Na_baseline+alb_admit+baseline_creatinine+encephalopathy_admission+alcoholic_hepatitis_admission,failcode=1,cencode=0, data = master) %>% tbl_regression(exp = TRUE)%>%
+  bold_p(0.01) %>%        # bold p-values under a given threshold (default 0.05)
+  bold_labels() %>% add_n()
+```
+
+
+
+## multivariate logistic regression outcome icu_admission
+```{r,echo=FALSE,warning=FALSE, message=FALSE,include=T}
+glm(icu_admission ~ hispanic_race+age_admission+sex+MELD_Na_baseline+alb_admit+encephalopathy_admission+alcoholic_hepatitis_admission+htn+cad+ckd, family = binomial(link = 'logit'),data=master)  %>%  tbl_regression(exponentiate = TRUE,
+                       pvalue_fun = ~style_pvalue(.x, digits = 3)) %>% bold_p() %>% # bold p-values under a given threshold (default 0.05)
+  bold_labels()%>% 
+  modify_spanning_header(
+    c(estimate, ci, p.value) ~  
+      "**icu_admission mutilvariate logistic regression**")%>% add_n()
+
+```
+
+## multivariate logistic regression outcome transplant_evaluation_outcome
+```{r,echo=FALSE,warning=FALSE, message=FALSE,include=T}
+glm(transplant_evaluation_outcome ~ hispanic_race+age_admission+sex+MELD_Na_baseline+alb_admit+encephalopathy_admission+alcoholic_hepatitis_admission+htn+cad+ckd, family = binomial(link = 'logit'),data=master)  %>%  tbl_regression(exponentiate = TRUE,
+                       pvalue_fun = ~style_pvalue(.x, digits = 3)) %>% bold_p() %>% # bold p-values under a given threshold (default 0.05)
+  bold_labels()%>% 
+  modify_spanning_header(
+    c(estimate, ci, p.value) ~  
+      "**transplant_evaluation_outcome mutilvariate logistic regression**") %>% add_n()
+
+```
+
+## multivariate logistic regression outcome transplant_evaluation_outcome
+```{r,echo=FALSE,warning=FALSE, message=FALSE,include=T}
+glm(transplant_evaluation_outcome ~ hispanic_race+age_admission+sex+MELD_Na_baseline+alb_admit+encephalopathy_admission+alcoholic_hepatitis_admission+htn+cad+ckd, family = binomial(link = 'logit'),data=master)  %>%  tbl_regression(exponentiate = TRUE,
+                       pvalue_fun = ~style_pvalue(.x, digits = 3)) %>% bold_p() %>% # bold p-values under a given threshold (default 0.05)
+  bold_labels()%>% 
+  modify_spanning_header(
+    c(estimate, ci, p.value) ~  
+      "**transplant_evaluation_outcome mutilvariate logistic regression**")%>% add_n()
+
+```
+
+
+## multivariate logistic regression outcome rrt
+```{r,echo=FALSE,warning=FALSE, message=FALSE,include=T}
+
+glm(rrt ~ hispanic_race+age_admission+sex+MELD_Na_baseline+alb_admit+encephalopathy_admission+alcoholic_hepatitis_admission+htn+cad+ckd, family = binomial(link = 'logit'),data=master)  %>%  tbl_regression(exponentiate = TRUE,
+                       pvalue_fun = ~style_pvalue(.x, digits = 3)) %>% bold_p() %>% # bold p-values under a given threshold (default 0.05)
+  bold_labels()%>% 
+  modify_spanning_header(
+    c(estimate, ci, p.value) ~  
+      "**rrt mutilvariate logistic regression**")%>% add_n()
+
+```
+
+
+
+############### race
+
+## multivariate logistic regression outcome icu_admission
+```{r,echo=FALSE,warning=FALSE, message=FALSE,include=T}
+glm(icu_admission ~ race_cat_new+age_admission+sex+MELD_Na_baseline+alb_admit+encephalopathy_admission+alcoholic_hepatitis_admission+htn+cad+ckd, family = binomial(link = 'logit'),data=master)  %>%  tbl_regression(exponentiate = TRUE,
+                       pvalue_fun = ~style_pvalue(.x, digits = 3)) %>% bold_p() %>% # bold p-values under a given threshold (default 0.05)
+  bold_labels()%>% 
+  modify_spanning_header(
+    c(estimate, ci, p.value) ~  
+      "**icu_admission mutilvariate logistic regression**")%>% add_n()
+
+```
+
+## multivariate logistic regression outcome transplant_evaluation_outcome
+```{r,echo=FALSE,warning=FALSE, message=FALSE,include=T}
+glm(transplant_evaluation_outcome ~ race_cat_new+age_admission+sex+MELD_Na_baseline+alb_admit+encephalopathy_admission+alcoholic_hepatitis_admission+htn+cad+ckd, family = binomial(link = 'logit'),data=master)  %>%  tbl_regression(exponentiate = TRUE,
+                       pvalue_fun = ~style_pvalue(.x, digits = 3)) %>% bold_p() %>% # bold p-values under a given threshold (default 0.05)
+  bold_labels()%>% 
+  modify_spanning_header(
+    c(estimate, ci, p.value) ~  
+      "**transplant_evaluation_outcome mutilvariate logistic regression**") %>% add_n()
+
+```
+
+## multivariate logistic regression outcome transplant_evaluation_outcome
+```{r,echo=FALSE,warning=FALSE, message=FALSE,include=T}
+glm(transplant_evaluation_outcome ~ race_cat_new+age_admission+sex+MELD_Na_baseline+alb_admit+encephalopathy_admission+alcoholic_hepatitis_admission+htn+cad+ckd, family = binomial(link = 'logit'),data=master)  %>%  tbl_regression(exponentiate = TRUE,
+                       pvalue_fun = ~style_pvalue(.x, digits = 3)) %>% bold_p() %>% # bold p-values under a given threshold (default 0.05)
+  bold_labels()%>% 
+  modify_spanning_header(
+    c(estimate, ci, p.value) ~  
+      "**transplant_evaluation_outcome mutilvariate logistic regression**")%>% add_n()
+
+```
+
+
+## multivariate logistic regression outcome rrt
+```{r,echo=FALSE,warning=FALSE, message=FALSE,include=T}
+table(master$rrt,master$aki_stage_4)
+
+glm(rrt ~ race_cat_new+age_admission+sex+MELD_Na_baseline+alb_admit+encephalopathy_admission+alcoholic_hepatitis_admission+htn+cad+ckd, family = binomial(link = 'logit'),data=master)  %>%  tbl_regression(exponentiate = TRUE,
+                       pvalue_fun = ~style_pvalue(.x, digits = 3)) %>% bold_p() %>% # bold p-values under a given threshold (default 0.05)
+  bold_labels()%>% 
+  modify_spanning_header(
+    c(estimate, ci, p.value) ~  
+      "**rrt mutilvariate logistic regression**")%>% add_n()
+
+```
+
+
+

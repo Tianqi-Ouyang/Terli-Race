@@ -1,0 +1,487 @@
+---
+title: "Final race analysis"
+output: html_document
+date: "2025-07-22"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tableone)
+library(gtsummary)
+library(survival)
+library(ggplot2)
+library(readxl)
+library(ggpubr)
+library(splines)
+library(xlsx)
+library(MatchIt)
+library(survminer)
+
+
+setwd('/Users/to909/Desktop/Andrew')
+all<- read_excel("All_edited_new_12142022.xlsx")
+
+
+Baylor0913<- read_excel("Baylor0913.xlsx") %>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Indiana0913 <- read_excel("Indiana0913.xlsx") %>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Jacksonville0913<- read_excel("Jacksonville0913.xlsx") %>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Kentukey0913<- read_excel("Kentukey0913.xlsx")  %>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+MCW0913<- read_excel("MCW0913.xlsx")%>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+MGH0913<- read_excel("MGH0913.xlsx")%>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Michigan0913<- read_excel("Michigan0913.xlsx")%>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Oschner0913<- read_excel("Oschner0913.xlsx")%>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Rochester0913<- read_excel("Rochester0913.xlsx")%>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+USC0913<- read_excel("USC0913.xlsx")%>%mutate(rrt_crrt=NA,days_icu=NA,cpr_given=NA) %>%  select(study_id,race,rrt_crrt,days_icu,cpr_given)
+Yale0913<- read_excel("Yale0913.xlsx")%>% select(study_id,race,rrt_crrt,days_icu,cpr_given)
+race_added <- rbind(Baylor0913,Indiana0913,Jacksonville0913,Kentukey0913,MCW0913,MGH0913,Michigan0913,Oschner0913,Rochester0913,USC0913,Yale0913) 
+
+
+all <- merge(all,race_added, by="study_id",all.x=TRUE)
+
+all <- all %>% mutate(type_of_aki=case_when(
+  final_type_of_aki == 1 ~ "Prerenal",
+  final_type_of_aki == 2 ~ "HRS-AKI",
+  final_type_of_aki == 3 ~"ATN",
+  final_type_of_aki == 4 ~"Other",
+  final_type_of_aki == 5 ~"Unable to diagnosis")) %>%
+  mutate(etiology_cirrhosis=case_when(
+    etiology_cirrhosis == 1 ~ "Alcohol",
+    etiology_cirrhosis == 2 ~ "HCV",
+    etiology_cirrhosis == 3 ~ "NASH",
+    etiology_cirrhosis == 5 ~ "Multifactorial",
+    etiology_cirrhosis == 6 | etiology_cirrhosis == 7 | etiology_cirrhosis == 4 ~ "Other")) %>%
+
+  mutate(
+      race_cat_4 = case_when(
+        ethnicity == 2 & race == 5 ~ "NHW",  # Non-Hispanic White
+        ethnicity == 1 & race == 5 ~ "HW",   # Hispanic White
+        ethnicity %in% c(1,2)  & race == 3 ~ "B",  # Non-Hispanic Black
+        (ethnicity %in% c(1, 2) ) & (race %in% c(1, 2, 4, 6)) ~ "NWNB"
+    )) %>% 
+
+  mutate(
+   
+      race_cat_5 = case_when(
+        ethnicity == 2 & race == 5 ~ "NHW",  # Non-Hispanic White
+        ethnicity == 1 & race == 5 ~ "HW",   # Hispanic White
+        ethnicity == 2 & race == 3 ~ "NHB",  # Non-Hispanic Black
+        ethnicity == 1 & race == 3 ~ "HB",   # Hispanic Black
+        ethnicity %in% c(1, 2) & race %in% c(1, 2, 4, 6, 7) ~ "NWNB"
+    )
+  
+  ) %>% 
+  mutate(race=case_when(
+    race == 1 ~ "American Indian or Alaska Native",
+    race == 2 ~ "Asian",
+    race == 3 ~ "Black or African American",
+    race == 4 ~ "Native Hawaiian or Other Pacific Islander",
+    race == 5 ~ "White", 
+    race == 6 ~ "Other", 
+    race == 7 ~ "Unknown")) %>% 
+  mutate(race_cat_new=case_when(
+    race == "Black or African American" ~ "Black or African American",
+    race == "White" ~ "White", 
+    TRUE ~ "Other"
+  ),
+  cirrhosis=case_when(etiology_cirrhosis == 1 ~ 1,
+                      is.na(etiology_cirrhosis) ~ NA_real_,
+                      TRUE ~ 0),
+  transplant_evaluation_outcome=case_when( is.na(Transplant_evalutation) ~ NA_real_ ,
+                                           Transplant_evalutation==1 ~ 1,
+                                           TRUE ~ 0
+    
+  ))%>% mutate(ethnicity=ifelse(ethnicity==1,"Hispanic",ifelse(ethnicity==2,"Non-Hispanic","Unknown")))
+
+master <- all %>% filter(!race=='Unknown',!ethnicity=="Unknown")  %>% mutate(MELD_Na_baseline =replace_na(MELD_Na_baseline,median(MELD_Na_baseline,na.rm = TRUE))) %>% filter(MELD_Na_baseline>=0)
+
+
+
+```
+
+
+
+
+```{r,include=FALSE}
+master <- master %>% mutate(female=ifelse(sex==2,1,0))
+
+calculate_meld3 <- function(female, bilirubin, sodium, inr, creatinine, albumin) {
+  # Return NA if any input is NA or non-positive
+  if (anyNA(c(female, bilirubin, sodium, inr, creatinine, albumin)) ||
+      any(c(bilirubin, sodium, inr, creatinine, albumin) <= 0)) {
+    return(NA)
+  }
+  
+  meld3 <- 1.33 * female +
+           4.56 * log(bilirubin) +
+           0.82 * (137 - sodium) -
+           0.24 * (137 - sodium) * log(bilirubin) +
+           9.09 * log(inr) +
+           11.14 * log(creatinine) +
+           1.85 * (3.5 - albumin) -
+           1.83 * (3.5 - albumin) * log(creatinine) +
+           6
+  
+  return(meld3)
+}
+
+master <- master %>%
+  mutate(
+    meld_3 = mapply(
+      calculate_meld3,
+      female = female,
+      bilirubin = tb_admit,
+      sodium = na_admit,
+      inr = inr_admit,
+      creatinine = creatinine_admission,
+      albumin = alb_admit
+    )
+  )
+
+
+
+
+
+all_var <- c(
+  "age_admission", "sex", "White", "race_cat_new", "reason_for_admission",
+  "loop_diuretic", "aldosterone_antagonist", "lactulose", "rifaximin",
+  "prophylactic_antibiotic", "nsaids", "beta_blockers", "albumin_given_admission",
+  "albumin_amount_admission", "albumin_given_prior", "diabetes", "cad", "ckd", "htn",
+  "etiology_cirrhosis", "ascites_admission", "encephalopathy_admission",
+  "gi_bleed_admission", "peritonitis_admission", "hcc_admission", "tips_admission",
+  "lvp_admission", "alcoholic_hepatitis_admission", "na_admit", "k_admit",
+  "cl_admit", "co2_admit", "bun_admit", "creatinine_admission", "urine_creatinine",
+  "ca_admit", "mg_admit", "phos_admit", "peak_creatinine", "alt_admit",
+  "alkphos_admit", "tb_admit", "alb_admit", "nh3_admit", "inr_admit",
+  "wbc_admit", "hct_admit", "plt_admit", "urine_sodium", "fena",
+  "he_grade_admission", "sbp_admission", "dbp_admission", "rrt", "rrt_hemodialysis",
+  "initial_rrt", "icu_admission", "hrs_vasoconstrictor", "pressor", "intubated",
+  "respiratory_failure", "liver_transplant_listed", "liver_transplant",
+  "kidney_transplant", "palliative_care", "discharge_disposition", "code_status",
+  "Akin", "final_type_of_aki", "MELD_baseline", "MELD_Na_baseline", "site",
+  "AKI_responders", "clif_score", "MAP", "CLIF_C_Score", "aclf_grade",
+  "status_90days", "time_90days", "Encephalopathy", "Alcoholic_hepatitis",
+  "HCC", "New_diagnosis_of_cirrhosis", "Transplant_evalutation", "SBP",
+  "aki_stage_4", "death_discharge", "baseline_creatinine", "admission_route",
+  "los",
+  # Added 0317
+  "admission_route", "peak_creatinine", "rrt_hemodialysis", "rrt_crrt",
+  "initial_rrt", "days_icu", "intubated", "death_discharge", "respiratory_failure",
+  "readmissions", "liver_transplant", "kidney_transplant", "discharge_disposition",
+  "cpr_given",'race_cat_4',"icu_admission", "Transplant_evalutation","liver_transplant_listed","palliative_care","code_status","type_of_aki","meld_3"
+)
+
+
+
+# all the categorical variables 
+cat_var <- c(
+  "sex", "White", "race_cat_new", "reason_for_admission", "loop_diuretic", "aldosterone_antagonist", "lactulose", "rifaximin",
+  "prophylactic_antibiotic", "nsaids", "beta_blockers", "albumin_given_admission", "albumin_given_prior", "diabetes", "cad", 
+  "ckd", "htn", "etiology_cirrhosis", "ascites_admission", "encephalopathy_admission", "gi_bleed_admission", "peritonitis_admission", 
+  "hcc_admission", "tips_admission", "lvp_admission", "alcoholic_hepatitis_admission", "he_grade_admission", "rrt", 
+  "rrt_hemodialysis", "initial_rrt", "icu_admission", "hrs_vasoconstrictor", "pressor", "intubated", "respiratory_failure", 
+  "liver_transplant_listed", "liver_transplant", "kidney_transplant", "palliative_care", "discharge_disposition", "code_status", 
+  "Akin", "final_type_of_aki", "site", "AKI_responders", "aclf_grade", "Encephalopathy", "Alcoholic_hepatitis", "HCC", 
+  "New_diagnosis_of_cirrhosis", "Transplant_evalutation", "aki_stage_4", "death_discharge", "admission_route", 
+  "rrt_crrt", "readmissions", "cpr_given",'race_cat_4',"type_of_aki"
+)
+
+
+#create numerical variables
+num_var <- setdiff(all_var,cat_var)
+
+
+master[, cat_var] <- lapply(master[, cat_var], as.factor)
+# relevel factor #
+
+master$race_cat_new <- as.factor(master$race_cat_new )
+master$race_cat_new <- relevel(master$race_cat_new, ref= "White")
+
+master$race_cat_4 <- relevel(master$race_cat_4, ref= "NHW")
+
+
+
+
+master <- master %>% select(all_var) %>%
+  filter(if_all(all_of(c(
+    "age_admission", "meld_3", "etiology_cirrhosis", "hcc_admission",
+    "diabetes", "cad", "ckd", "htn", "site"
+  )), ~ !is.na(.)))
+
+# check_missing <- master %>% select(all_of(c(
+#     "age_admission", "meld_3", "etiology_cirrhosis", "hcc_admission",
+#     "diabetes", "cad", "ckd", "htn", "site"
+#   )))
+# colSums(is.na(check_missing))
+
+```
+
+# Table 1 race_cat_new
+```{r,include=FALSE}
+
+T1_race_all <- CreateTableOne(vars = all_var[1:60],strata = "race_cat_new",includeNA = F,addOverall = TRUE,data = master, factorVars = cat_var)
+#print table one 
+T1_race_all_csv <- print(T1_race_all,exact = c("HCC","New_diagnosis_of_cirrhosis","kidney_transplant"), nonnormal=num_var,showAllLevels = T,missing = T,quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+#save 
+write.csv(T1_race_all_csv, file = '/Users/to909/Partners HealthCare Dropbox/Tianqi Ouyang/Projects/Subanalysis_race/final/Table1_race_all_race_cat_new_1.csv')
+
+
+
+T1_race_all <- CreateTableOne(vars = all_var[60:97],strata = "race_cat_new",includeNA = F,addOverall = TRUE,data = master, factorVars = cat_var)
+#print table one 
+T1_race_all_csv <- print(T1_race_all,exact = c("HCC","New_diagnosis_of_cirrhosis","kidney_transplant"), nonnormal=num_var,showAllLevels = T,missing = T,quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+#save 
+write.csv(T1_race_all_csv, file = '/Users/to909/Partners HealthCare Dropbox/Tianqi Ouyang/Projects/Subanalysis_race/final/Table1_race_all_race_cat_new_2.csv')
+
+
+```
+
+# Table 1 race_cat_4
+```{r,include=FALSE}
+T1_race_all <- CreateTableOne(vars = all_var,strata = 'race_cat_4',includeNA = F,addOverall = TRUE,data = master %>% select(1:60,race_cat_4), factorVars = cat_var)
+#print table one 
+T1_race_all_csv <- print(T1_race_all, nonnormal=num_var,showAllLevels = F,missing = T,quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+#save 
+write.csv(T1_race_all_csv, file = '/Users/to909/Partners HealthCare Dropbox/Tianqi Ouyang/Projects/Subanalysis_race/final/Table1_race_all_1_race_cat_4_1.csv')
+
+
+T1_race_all <- CreateTableOne(vars = all_var,strata = 'race_cat_4',includeNA = F,addOverall = TRUE,data = master %>% select(60:97,race_cat_4), factorVars = cat_var)
+#print table one 
+T1_race_all_csv <- print(T1_race_all, nonnormal=num_var,showAllLevels = F,missing = T,quote = FALSE, noSpaces = TRUE, printToggle = FALSE)
+#save 
+write.csv(T1_race_all_csv, file = '/Users/to909/Partners HealthCare Dropbox/Tianqi Ouyang/Projects/Subanalysis_race/final/Table1_race_all_1_race_cat_4_2csv')
+
+race_table <- table(master$race_cat_4)
+custom_colors <- c("#1b9e77", "#d95f02", "#7570b3", "#e7298a", "#66a61e")
+pie(race_table, main = "Distribution of Race Categories", col = custom_colors)
+```
+
+
+
+
+# Competing risk Univariate model 1 
+```{r,echo=FALSE,warning=FALSE, message=FALSE}
+master$status_90days <- factor(master$status_90days)
+master %>%
+  select("race_cat_4","age_admission","meld_3","etiology_cirrhosis","hcc_admission","diabetes","cad","ckd","htn","site","time_90days","status_90days"
+  ) %>%
+  tbl_uvregression(
+    method = tidycmprsk::crr,
+    y = Surv(time_90days,status_90days),
+    method.args=list(failcode = 1, cencode = 0),
+    pvalue_fun = ~style_pvalue(.x, digits = 3),
+    exponentiate = TRUE,
+  ) %>%
+  bold_p() %>%        # bold p-values under a given threshold (default 0.05)
+  bold_labels() %>% add_n()
+
+```
+
+# Competing risk Multivariate model 1 
+```{r,echo=FALSE,warning=FALSE, message=FALSE}
+tidycmprsk::crr(
+  Surv(time_90days, status_90days) ~race_cat_4 + age_admission + meld_3 +
+            etiology_cirrhosis + hcc_admission + diabetes + cad + ckd + htn + site,
+  failcode = 1,
+  cencode = 0,
+  data = master
+) %>%  tbl_regression(exponentiate = TRUE,
+                      pvalue_fun = ~
+                        style_pvalue(.x, digits = 3)) %>% bold_p() %>%
+  bold_labels() %>% add_n()
+```
+
+
+
+# Competing risk Univariate model 2 
+```{r,echo=FALSE,warning=FALSE, message=FALSE}
+master$status_90days <- factor(master$status_90days)
+master %>%
+  select("race_cat_4","age_admission","meld_3","etiology_cirrhosis","hcc_admission","site","time_90days","status_90days"
+  ) %>%
+  tbl_uvregression(
+    method = tidycmprsk::crr,
+    y = Surv(time_90days,status_90days),
+    method.args=list(failcode = 1, cencode = 0),
+    pvalue_fun = ~style_pvalue(.x, digits = 3),
+    exponentiate = TRUE,
+  ) %>%
+  bold_p() %>%        # bold p-values under a given threshold (default 0.05)
+  bold_labels() 
+
+```
+
+# Competing risk Multivariate model 2 
+```{r,echo=FALSE,warning=FALSE, message=FALSE}
+tidycmprsk::crr(
+  Surv(time_90days, status_90days) ~race_cat_4+ age_admission + meld_3 +
+            etiology_cirrhosis + hcc_admission +  site,
+  failcode = 1,
+  cencode = 0,
+  data = master
+) %>%  tbl_regression(exponentiate = TRUE,
+                      pvalue_fun = ~
+                        style_pvalue(.x, digits = 3)) %>% bold_p() %>%
+  bold_labels() %>% add_n()
+```
+
+# KM Plot HRS cohort 
+```{r,echo=FALSE,warning=FALSE, message=FALSE}
+master <- master %>% mutate(death_status_90days=ifelse(status_90days==1,1,0))
+
+
+
+
+master$race_cat_4 <- factor(master$race_cat_4)
+
+fit_90days_death<- survfit(Surv(time_90days,death_status_90days) ~ race_cat_4, data = master )
+
+
+
+result_90days_death<- ggsurvplot(
+  fit_90days_death,                     # survfit object with calculated statistics.
+  data = master,  # data used to fit survival curves. 
+  surv.scale = "percent",
+  # legend.title = "Etiology of AKI", # legend title
+  # legend.labs = c("Prerenal","HRS-AKI","ATN"), # legend labels
+  # palette = c("#00ABFD","#7CAE00","#F8766D"),
+  pval = T,             # show p-value of log-rank test.
+  pval.coord = c(75, 1),# pvalue  position 
+  pval.size = 4, # pvalue size 
+  conf.int = FALSE,         # show confidence intervals for 
+  xlim = c(0,90),  # present narrower X axis, but not affect survival estimates.
+  xlab = "Time (days)", # Xlabel.
+  break.time.by = 30,     # break X axis in time intervals by 500.
+  # ggtheme = theme_minimal(), # customize plot and risk table with a theme.
+  tables.theme = theme_cleantable(),
+  risk.table = TRUE,       # show risk table.
+  risk.table.y.text.col = T, # colour risk table text annotations.
+  risk.table.y.text = T, # show bars instead of names in text annotations
+  risk.table.fontsize= 4,
+  # in legend of risk table
+)
+
+result_90days_death$table <- result_90days_death$table + theme(axis.line = element_blank()) + ggtitle("Number of participants entering intervals")
+
+result_90days_death
+
+```
+
+# HRS cohort 
+```{r,include=FALSE}
+master_hrs <- master %>% filter(type_of_aki=="HRS-AKI")
+```
+
+
+
+# Competing risk Univariate model 1 HRS cohort 
+```{r,echo=FALSE,warning=FALSE, message=FALSE}
+master_hrs$status_90days <- factor(master_hrs$status_90days)
+master_hrs %>%
+  select("race_cat_4","age_admission","meld_3","etiology_cirrhosis","hcc_admission","diabetes","cad","ckd","htn","site","time_90days","status_90days"
+  ) %>%
+  tbl_uvregression(
+    method = tidycmprsk::crr,
+    y = Surv(time_90days,status_90days),
+    method.args=list(failcode = 1, cencode = 0),
+    pvalue_fun = ~style_pvalue(.x, digits = 3),
+    exponentiate = TRUE,
+  ) %>%
+  bold_p() %>%        # bold p-values under a given threshold (default 0.05)
+  bold_labels() %>% add_n()
+
+```
+
+# Competing risk Multivariate model 1 HRS cohort 
+```{r,echo=FALSE,warning=FALSE, message=FALSE}
+tidycmprsk::crr(
+  Surv(time_90days, status_90days) ~race_cat_4+ age_admission + meld_3 +
+            etiology_cirrhosis + hcc_admission + diabetes + cad + ckd + htn + site,
+  failcode = 1,
+  cencode = 0,
+  data = master_hrs
+) %>%  tbl_regression(exponentiate = TRUE,
+                      pvalue_fun = ~
+                        style_pvalue(.x, digits = 3)) %>% bold_p() %>%
+  bold_labels() %>% add_n()
+```
+
+
+
+# Competing risk Univariate model 2 HRS cohort 
+```{r,echo=FALSE,warning=FALSE, message=FALSE}
+master_hrs$status_90days <- factor(master_hrs$status_90days)
+master_hrs %>%
+  select("race_cat_4","age_admission","meld_3","etiology_cirrhosis","hcc_admission","site","time_90days","status_90days"
+  ) %>%
+  tbl_uvregression(
+    method = tidycmprsk::crr,
+    y = Surv(time_90days,status_90days),
+    method.args=list(failcode = 1, cencode = 0),
+    pvalue_fun = ~style_pvalue(.x, digits = 3),
+    exponentiate = TRUE,
+  ) %>%
+  bold_p() %>%        # bold p-values under a given threshold (default 0.05)
+  bold_labels() 
+
+```
+
+# Competing risk Multivariate model 2 HRS cohort 
+```{r,echo=FALSE,warning=FALSE, message=FALSE}
+tidycmprsk::crr(
+  Surv(time_90days, status_90days) ~race_cat_4+ age_admission + meld_3 +
+            etiology_cirrhosis + hcc_admission +  site,
+  failcode = 1,
+  cencode = 0,
+  data = master_hrs
+) %>%  tbl_regression(exponentiate = TRUE,
+                      pvalue_fun = ~
+                        style_pvalue(.x, digits = 3)) %>% bold_p() %>%
+  bold_labels() %>% add_n()
+```
+
+# KM Plot HRS cohort 
+```{r,echo=FALSE,warning=FALSE, message=FALSE}
+master_hrs <- master_hrs %>% mutate(death_status_90days=ifelse(status_90days==1,1,0))
+
+
+
+
+master_hrs$race_cat_4 <- factor(master_hrs$race_cat_4)
+
+fit_90days_death<- survfit(Surv(time_90days,death_status_90days) ~ race_cat_4, data = master_hrs )
+
+
+
+result_90days_death<- ggsurvplot(
+  fit_90days_death,                     # survfit object with calculated statistics.
+  data = master_hrs,  # data used to fit survival curves. 
+  surv.scale = "percent",
+  # legend.title = "Etiology of AKI", # legend title
+  # legend.labs = c("Prerenal","HRS-AKI","ATN"), # legend labels
+  # palette = c("#00ABFD","#7CAE00","#F8766D"),
+  pval = T,             # show p-value of log-rank test.
+  pval.coord = c(75, 1),# pvalue  position 
+  pval.size = 4, # pvalue size 
+  conf.int = FALSE,         # show confidence intervals for 
+  xlim = c(0,90),  # present narrower X axis, but not affect survival estimates.
+  xlab = "Time (days)", # Xlabel.
+  break.time.by = 30,     # break X axis in time intervals by 500.
+  # ggtheme = theme_minimal(), # customize plot and risk table with a theme.
+  tables.theme = theme_cleantable(),
+  risk.table = TRUE,       # show risk table.
+  risk.table.y.text.col = T, # colour risk table text annotations.
+  risk.table.y.text = T, # show bars instead of names in text annotations
+  risk.table.fontsize= 4,
+  # in legend of risk table
+)
+
+result_90days_death$table <- result_90days_death$table + theme(axis.line = element_blank()) + ggtitle("Number of participants entering intervals")
+
+result_90days_death
+```
+
+
+
+
+
+
