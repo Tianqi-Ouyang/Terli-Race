@@ -2,7 +2,7 @@
 title: "Revision"
 ---
 
-```{r setup, include=FALSE}
+```{r setup}
 library(tidyverse)
 library(readxl)
 library(knitr)
@@ -12,7 +12,7 @@ library(survival)
 library(tidycmprsk)
 library(ggsurvfit)
 
-knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
 
 data_dir <- "data"
 all <- read_excel(file.path(data_dir, "All_edited_new_12142022.xlsx"))
@@ -283,36 +283,53 @@ tbl_merge(
 
 ## Figure 2: Cumulative Incidence of Death — Full Cohort
 
+Unadjusted (univariable) cumulative incidence of death through 90 days by race-ethnicity, treating liver transplantation as the competing event. Overall p-value is from **Gray's test** — the CIF analogue of the log-rank test — testing the null that all four CIFs are equal.
+
 ```{r, fig.width=10, fig.height=7}
 cif_all <- cuminc(Surv(time_90days, status_90days) ~ race_cat_4, data = master)
 
+# Extract Gray's test p-value for the death outcome (outcome code "1")
+gray_all <- cif_all$cmprsk$Tests
+p_gray_all <- gray_all[rownames(gray_all) == "1", "pv"]
+gray_label_all <- paste0("Gray's test p = ", style_pvalue(p_gray_all, digits = 3))
+
 ggcuminc(cif_all, outcome = "1") +
   scale_x_continuous(breaks = seq(0, 90, 30), limits = c(0, 90)) +
-  scale_y_continuous(labels = scales::percent, limits = c(0, NA)) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
   labs(
     x = "Time (days)",
     y = "Cumulative incidence of death",
     title = "Cumulative incidence of death through 90 days by race-ethnicity (full cohort)",
     color = "Race-ethnicity"
   ) +
+  annotate("text", x = 2, y = 0.95, label = gray_label_all,
+           hjust = 0, size = 4.5, fontface = "bold") +
   theme_minimal() +
   add_risktable()
 ```
 
 ## Figure 3: Cumulative Incidence of Death — HRS-AKI Sub-cohort
 
+Unadjusted CIF of death through 90 days by race-ethnicity among patients with HRS-AKI. Overall p-value from Gray's test across all four groups.
+
 ```{r, fig.width=10, fig.height=7}
 cif_hrs <- cuminc(Surv(time_90days, status_90days) ~ race_cat_4, data = master_hrs)
 
+gray_hrs <- cif_hrs$cmprsk$Tests
+p_gray_hrs <- gray_hrs[rownames(gray_hrs) == "1", "pv"]
+gray_label_hrs <- paste0("Gray's test p = ", style_pvalue(p_gray_hrs, digits = 3))
+
 ggcuminc(cif_hrs, outcome = "1") +
   scale_x_continuous(breaks = seq(0, 90, 30), limits = c(0, 90)) +
-  scale_y_continuous(labels = scales::percent, limits = c(0, NA)) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
   labs(
     x = "Time (days)",
     y = "Cumulative incidence of death",
     title = "Cumulative incidence of death through 90 days by race-ethnicity (HRS-AKI)",
     color = "Race-ethnicity"
   ) +
+  annotate("text", x = 2, y = 0.95, label = gray_label_hrs,
+           hjust = 0, size = 4.5, fontface = "bold") +
   theme_minimal() +
   add_risktable()
 ```
