@@ -3,6 +3,10 @@ title: "Revision"
 ---
 
 ```{r setup}
+# Force UTF-8 locale so em-dashes and other non-ASCII characters render correctly
+suppressWarnings(Sys.setlocale("LC_ALL", "en_US.UTF-8"))
+options(encoding = "UTF-8")
+
 library(tidyverse)
 library(readxl)
 library(knitr)
@@ -161,8 +165,8 @@ exclusion_df <- tibble(
 check_sum <- (n_total - n1) + (n1 - n2) + (n2 - n3) + (n3 - n4) + (n4 - n5)
 
 kable(exclusion_df, caption = paste0(
-  "Cohort exclusion cascade — total excluded: ", check_sum,
-  ", verification: ", n_total, " − ", check_sum, " = ", n_total - check_sum))
+  "Cohort exclusion cascade -- total excluded: ", check_sum,
+  ", verification: ", n_total, " - ", check_sum, " = ", n_total - check_sum))
 ```
 
 ## Table 3: Competing Risk Models — Full Cohort {.tabset}
@@ -537,7 +541,7 @@ invisible(capture.output({
 
 ```{r}
 kable(format_cmest(res_full),
-      caption = paste0("Logistic-regression mediation decomposition — full cohort (N = ",
+      caption = paste0("Logistic-regression mediation decomposition -- full cohort (N = ",
                        res_full$n,
                        "). Effects on the odds-ratio scale. pm is proportion of the total effect mediated through LT-listing."))
 ```
@@ -553,7 +557,7 @@ invisible(capture.output({
 
 ```{r}
 kable(format_cmest(res_hrs),
-      caption = paste0("Logistic-regression mediation decomposition — HRS-AKI sub-cohort (N = ",
+      caption = paste0("Logistic-regression mediation decomposition -- HRS-AKI sub-cohort (N = ",
                        res_hrs$n,
                        "). **Caution:** very wide bootstrap CIs reflect the small sample and low event count in this subgroup."))
 ```
