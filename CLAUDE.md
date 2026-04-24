@@ -56,20 +56,7 @@ Filter chain:
 
 ## Required Packages
 
-`tidyverse, tableone, gtsummary, survival, survminer, ggplot2, ggpubr, readxl, splines, xlsx, MatchIt, tidycmprsk, ggsurvfit, cmprsk, CMAverse`.
-
-`CMAverse` is not on CRAN — install with `remotes::install_github("BS1125/CMAverse")`. After installing, run `install.packages(c("xfun","knitr","rmarkdown"))` because the install step sometimes upgrades `xfun` to a version that breaks quarto/rmarkdown.
-
-## Quarto Website (`revision.qmd`, `summary.qmd`)
-
-- `_quarto.yml` builds a website with a navbar; rendered output goes to `docs/` so GitHub Pages can serve `main /docs`.
-- `.nojekyll` in `docs/` must exist or GitHub Pages will strip underscore-prefixed folders (breaks Quarto's `site_libs/`).
-- Code is shown with `code-fold: true` — every chunk must have `echo = TRUE` (not `include = FALSE`) to be foldable.
-- Expensive chunks (mediation bootstrap) use `cache=TRUE`. Clear caches with `rm -rf revision_cache/ _freeze/` before re-rendering when upstream data changes.
-
-## Mediation Analysis Notes
-
-`CMAverse::cmest` with `yreg = "logistic"` (binary 90-day mortality) and `mreg = list("logistic")`, 500 bootstrap replicates. Exposure = Black vs. non-Black; mediator = `liver_transplant_listed`. The cmest call emits `txtProgressBar` to stdout during bootstrap — wrap it in `invisible(capture.output({ ... }, type = c("output", "message")))` and set chunk option `results='hide'` so the progress bars don't leak into the rendered HTML.
+`tidyverse, tableone, gtsummary, survival, survminer, ggplot2, ggpubr, readxl, splines, xlsx, MatchIt, tidycmprsk`.
 
 ## Gotchas
 
