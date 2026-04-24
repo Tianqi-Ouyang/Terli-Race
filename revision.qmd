@@ -449,8 +449,6 @@ Black race  ──(direct, NDE)──────▶  Death by day 90
 
 **Method:** `CMAverse::cmest()` regression-based estimator with exposure–mediator interaction (Valeri-VanderWeele). Outcome = 90-day mortality (binary: 1 = died by day 90, 0 = alive — includes those who received liver transplant and were alive at day 90); Exposure = Black (1) vs. non-Black (0); Mediator = `liver_transplant_listed` (binary). Both mediator and outcome modeled with logistic regression. Confounders adjusted: age, MELD 3.0, etiology, HCC, diabetes, CAD, CKD, HTN, site. 95% CIs via 500 bootstrap replicates. Effects reported on the **odds-ratio scale**.
 
-**Key assumptions:** no unmeasured exposure–outcome, exposure–mediator, or mediator–outcome confounding conditional on measured covariates; consistency; positivity.
-
 ```{r mediation-setup}
 library(CMAverse)
 
