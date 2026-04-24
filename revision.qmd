@@ -430,3 +430,132 @@ bind_rows(fg_by_lt) %>%
   ) %>%
   kable(caption = "Unadjusted race sub-hazard ratios stratified by listing for liver transplant")
 ```
+
+## Mediation Analysis — LT-Listing as Mediator
+
+**Question:** How much of the association between Black race (vs. non-Black) and 90-day mortality is mediated through listing for liver transplant?
+
+**Causal model:**
+
+```
+Black race  ──(direct, NDE)──────▶  90-day death
+     │                                    ▲
+     └──▶  LT listed  ──(indirect, NIE)───┘
+```
+
+**Method:** `CMAverse::cmest()` regression-based estimator with exposure–mediator interaction. Exposure = Black (1) vs. non-Black (0); Mediator = `liver_transplant_listed` (binary); Outcome = 90-day mortality via Cox proportional hazards (cause-specific — liver transplant censored, the standard mediation framing when a competing event is itself the hypothesized mediator's downstream effect). Confounders adjusted: age, MELD 3.0, etiology, HCC, diabetes, CAD, CKD, HTN, site. 95% CIs via 500 bootstrap replicates.
+
+**Key assumptions:** no unmeasured exposure–outcome, exposure–mediator, or mediator–outcome confounding conditional on measured covariates; consistency; positivity.
+
+```{r mediation-setup}
+library(CMAverse)
+
+med_confounders <- c("age_admission", "meld_3", "etiology_cirrhosis",
+                     "hcc_admission", "diabetes", "cad", "ckd", "htn", "site")
+
+make_med_dat <- function(d) {
+  num01 <- function(x) as.numeric(as.character(x))
+  out <- d %>%
+    filter(!is.na(liver_transplant_listed)) %>%
+    mutate(
+      black         = as.numeric(race_cat_4 == "Black"),
+      lt_listed     = num01(liver_transplant_listed),
+      death         = num01(status_90days),
+      time          = as.numeric(time_90days),
+      age_admission = as.numeric(age_admission),
+      meld_3        = as.numeric(meld_3),
+      hcc_admission = num01(hcc_admission),
+      diabetes      = num01(diabetes),
+      cad           = num01(cad),
+      ckd           = num01(ckd),
+      htn           = num01(htn),
+      etiology_cirrhosis = factor(as.character(etiology_cirrhosis)),
+      site          = factor(as.character(site))
+    ) %>%
+    select(all_of(c("black", "lt_listed", "death", "time", med_confounders))) %>%
+    tidyr::drop_na() %>%
+    filter(time > 0) %>%
+    droplevels()
+  as.data.frame(out)
+}
+
+run_mediation <- function(dat, label) {
+  set.seed(42)
+  fit <- cmest(
+    data       = dat,
+    model      = "rb",
+    outcome    = "time",
+    event      = "death",
+    exposure   = "black",
+    mediator   = "lt_listed",
+    basec      = med_confounders,
+    EMint      = TRUE,
+    mreg       = list("logistic"),
+    yreg       = "coxph",
+    astar      = 0,
+    a          = 1,
+    mval       = list(0),
+    estimation = "imputation",
+    inference  = "bootstrap",
+    nboot      = 500,
+    multimp    = FALSE
+  )
+  list(fit = fit, label = label, n = nrow(dat))
+}
+```
+
+### Full cohort
+
+```{r mediation-full, cache=TRUE}
+med_full_dat <- make_med_dat(master)
+res_full <- run_mediation(med_full_dat, "Full cohort")
+```
+
+```{r}
+format_cmest <- function(res) {
+  fit <- res$fit
+  effects <- c("Rcde", "Rpnde", "Rtnde", "Rpnie", "Rtnie", "Rte", "pm")
+  est <- fit$effect.pe[effects]
+  cil <- fit$effect.ci.low[effects]
+  ciu <- fit$effect.ci.high[effects]
+  pv  <- fit$effect.pval[effects]
+  tibble(
+    Effect = effects,
+    Meaning = c("Controlled direct effect",
+                "Pure natural direct effect (not through LT-listing)",
+                "Total natural direct effect",
+                "Pure natural indirect effect (through LT-listing)",
+                "Total natural indirect effect",
+                "Total effect",
+                "Proportion mediated"),
+    Estimate = sprintf("%.3f", est),
+    `95% CI` = sprintf("%.3f, %.3f", cil, ciu),
+    p = style_pvalue(pv, digits = 3)
+  )
+}
+
+tbl <- format_cmest(res_full)
+kable(tbl, caption = paste0("Mediation decomposition — full cohort (N = ",
+                            res_full$n, "). Rcde/Rpnde/etc. on HR scale; pm is the proportion of total effect mediated through LT-listing."))
+```
+
+### HRS-AKI sub-cohort
+
+```{r mediation-hrs, cache=TRUE}
+med_hrs_dat <- make_med_dat(master_hrs)
+res_hrs <- run_mediation(med_hrs_dat, "HRS-AKI")
+```
+
+```{r}
+tbl_hrs <- format_cmest(res_hrs)
+kable(tbl_hrs, caption = paste0("Mediation decomposition — HRS-AKI sub-cohort (N = ",
+                                res_hrs$n, "). **Caution:** very wide bootstrap CIs reflect the small sample and low event count in this subgroup."))
+```
+
+**How to read the table:**
+
+- **`te` (total effect)** — total HR of death for Black vs. non-Black
+- **`pnde` (pure natural direct effect)** — effect NOT through LT-listing
+- **`tnie` (total natural indirect effect)** — effect THROUGH LT-listing
+- **`pm` (proportion mediated)** — fraction of the total effect explained by LT-listing
+- **`cde`, `intref`, `intmed`** — VanderWeele four-way decomposition components (direct, interaction-reference, mediated interaction)
