@@ -56,4 +56,28 @@ Filter chain:
 
 ## Required Packages
 
-`tidyverse, tableone, gtsummary, survival, survminer, ggplot2, ggpubr, readxl, splines, xlsx, MatchIt, tidycmprsk`.
+`tidyverse, tableone, gtsummary, survival, survminer, ggplot2, ggpubr, readxl, splines, xlsx, MatchIt, tidycmprsk, ggsurvfit, cmprsk, CMAverse`.
+
+`CMAverse` is not on CRAN — install with `remotes::install_github("BS1125/CMAverse")`. After installing, run `install.packages(c("xfun","knitr","rmarkdown"))` because the install step sometimes upgrades `xfun` to a version that breaks quarto/rmarkdown.
+
+## Quarto Website (`revision.qmd`, `summary.qmd`)
+
+- `_quarto.yml` builds a website with a navbar; rendered output goes to `docs/` so GitHub Pages can serve `main /docs`.
+- `.nojekyll` in `docs/` must exist or GitHub Pages will strip underscore-prefixed folders (breaks Quarto's `site_libs/`).
+- Code is shown with `code-fold: true` — every chunk must have `echo = TRUE` (not `include = FALSE`) to be foldable.
+- Expensive chunks (mediation bootstrap) use `cache=TRUE`. Clear caches with `rm -rf revision_cache/ _freeze/` before re-rendering when upstream data changes.
+
+## Mediation Analysis Notes
+
+`CMAverse::cmest` with `yreg = "logistic"` (binary 90-day mortality) and `mreg = list("logistic")`, 500 bootstrap replicates. Exposure = Black vs. non-Black; mediator = `liver_transplant_listed`. The cmest call emits `txtProgressBar` to stdout during bootstrap — wrap it in `invisible(capture.output({ ... }, type = c("output", "message")))` and set chunk option `results='hide'` so the progress bars don't leak into the rendered HTML.
+
+## Gotchas
+
+- **Em-dashes in R strings:** Non-ASCII characters (`—`, `–`, `×`, accented letters) inside strings built by R at runtime (e.g., `paste0("Cohort — ", n)`, `kable` captions) get rendered as literal `<U+2014>` escapes when the R locale isn't UTF-8 — especially under `Rscript` in non-interactive terminals. Fixes applied: (a) `Sys.setlocale("LC_ALL", "en_US.UTF-8")` in the setup chunk; (b) use ASCII `--` in R code strings (pandoc auto-converts to en-dash). Em-dashes in prose Markdown (outside `{r}` chunks) are fine — pandoc reads them as UTF-8 directly.
+- **Patient-level data is PHI:** `data/*.xlsx` files are HARMONY patient-level records. The GitHub repo (`Tianqi-Ouyang/Terli-Race`) is public; `data/` is gitignored and must stay that way.
+- **USC race file missing columns:** `USC0913.xlsx` lacks `rrt_crrt`, `days_icu`, `cpr_given` — add them as NA before `rbind`.
+- **`Transplant_evalutation` misspelling:** kept intentionally; matches source column.
+
+## Commit Style
+
+Commits are authored by Tianqi Ouyang only. Do not add `Co-Authored-By` trailers or any other AI attribution.
