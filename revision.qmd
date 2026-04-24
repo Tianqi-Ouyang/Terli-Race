@@ -506,9 +506,11 @@ run_mediation <- function(dat, label) {
 
 ### Full cohort
 
-```{r mediation-full, cache=TRUE}
+```{r mediation-full, cache=TRUE, results='hide', message=FALSE, warning=FALSE}
 med_full_dat <- make_med_dat(master)
-res_full <- run_mediation(med_full_dat, "Full cohort")
+invisible(capture.output({
+  res_full <- run_mediation(med_full_dat, "Full cohort")
+}, type = "output"))
 ```
 
 ```{r}
@@ -541,9 +543,11 @@ kable(tbl, caption = paste0("Mediation decomposition — full cohort (N = ",
 
 ### HRS-AKI sub-cohort
 
-```{r mediation-hrs, cache=TRUE}
+```{r mediation-hrs, cache=TRUE, results='hide', message=FALSE, warning=FALSE}
 med_hrs_dat <- make_med_dat(master_hrs)
-res_hrs <- run_mediation(med_hrs_dat, "HRS-AKI")
+invisible(capture.output({
+  res_hrs <- run_mediation(med_hrs_dat, "HRS-AKI")
+}, type = "output"))
 ```
 
 ```{r}
